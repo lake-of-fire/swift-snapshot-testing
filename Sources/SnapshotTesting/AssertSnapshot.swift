@@ -333,30 +333,37 @@ public func verifySnapshot<Value, Format>(
       let fileManager = FileManager.default
       try fileManager.createDirectory(at: snapshotDirectoryUrl, withIntermediateDirectories: true)
 
-      let tookSnapshot = XCTestExpectation(description: "Took snapshot")
       var optionalDiffable: Format?
-      snapshotting.snapshot(try value()).run { b in
-        optionalDiffable = b
-        tookSnapshot.fulfill()
-      }
-      let result = XCTWaiter.wait(for: [tookSnapshot], timeout: timeout)
-      switch result {
-      case .completed:
-        break
-      case .timedOut:
-        return """
-          Exceeded timeout of \(timeout) seconds waiting for snapshot.
 
-          This can happen when an asynchronously rendered view (like a web view) has not loaded. \
-          Ensure that every subview of the view hierarchy has loaded to avoid timeouts, or, if a \
-          timeout is unavoidable, consider setting the "timeout" parameter of "assertSnapshot" to \
-          a higher value.
-          """
-      case .incorrectOrder, .invertedFulfillment, .interrupted:
-        return "Couldn't snapshot value"
-      @unknown default:
-        return "Couldn't snapshot value"
-      }
+      #if os(WASI)
+        snapshotting.snapshot(try value()).run { b in
+          optionalDiffable = b
+        }
+      #else
+        let tookSnapshot = XCTestExpectation(description: "Took snapshot")
+        snapshotting.snapshot(try value()).run { b in
+          optionalDiffable = b
+          tookSnapshot.fulfill()
+        }
+        let result = XCTWaiter.wait(for: [tookSnapshot], timeout: timeout)
+        switch result {
+        case .completed:
+          break
+        case .timedOut:
+          return """
+            Exceeded timeout of \(timeout) seconds waiting for snapshot.
+
+            This can happen when an asynchronously rendered view (like a web view) has not loaded. \
+            Ensure that every subview of the view hierarchy has loaded to avoid timeouts, or, if a \
+            timeout is unavoidable, consider setting the "timeout" parameter of "assertSnapshot" to \
+            a higher value.
+            """
+        case .incorrectOrder, .invertedFulfillment, .interrupted:
+          return "Couldn't snapshot value"
+        @unknown default:
+          return "Couldn't snapshot value"
+        }
+      #endif
 
       guard var diffable = optionalDiffable else {
         return "Couldn't snapshot value"
@@ -369,7 +376,7 @@ public func verifySnapshot<Value, Format>(
           try snapshotData.write(to: snapshotFileUrl)
         }
 
-        #if !os(Android) && !os(Linux) && !os(Windows)
+        #if !os(Android) && !os(Linux) && !os(Windows) && !os(WASI)
           if !isSwiftTesting,
             ProcessInfo.processInfo.environment.keys.contains("__XCODE_BUILT_PRODUCTS_DIR_PATHS")
           {
@@ -522,7 +529,7 @@ func sanitizePathComponent(_ string: String) -> String {
     .replacingOccurrences(of: "^-|-$", with: "", options: .regularExpression)
 }
 
-#if !os(Android) && !os(Linux) && !os(Windows)
+#if !os(Android) && !os(Linux) && !os(Windows) && !os(WASI)
   import CoreServices
 
   func uniformTypeIdentifier(fromExtension pathExtension: String) -> String? {
@@ -544,13 +551,17 @@ private class CleanCounterBetweenTestCases: NSObject, XCTestObservation {
   static func registerIfNeeded() {
     guard !registered else { return }
     defer { registered = true }
-    if Thread.isMainThread {
+    #if os(WASI)
       XCTestObservationCenter.shared.addTestObserver(CleanCounterBetweenTestCases())
-    } else {
-      DispatchQueue.main.sync {
+    #else
+      if Thread.isMainThread {
         XCTestObservationCenter.shared.addTestObserver(CleanCounterBetweenTestCases())
+      } else {
+        DispatchQueue.main.sync {
+          XCTestObservationCenter.shared.addTestObserver(CleanCounterBetweenTestCases())
+        }
       }
-    }
+    #endif
   }
 
   func testCaseDidFinish(_ testCase: XCTestCase) {
